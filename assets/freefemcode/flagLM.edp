@@ -1,0 +1,210 @@
+load "Curvature"
+load "isoline"
+load "iovtk"
+verbosity=0;
+string outputFileName = "output/"; 
+int[int] orderOutF = [1,1,1,1,1];
+int[int] orderOutS = [1,1,1,1,1];
+int[int] orderOutL = [1,1];
+
+int mh=3, m=15, n, saveEach=30, NN=6000;
+real muf=1,c1=2.e6,penal=0,rhof=1.e3,rhos=1.e3,rhod=rhos-rhof;
+real T=6, dt=T/NN, mus=dt*c1;
+real x0=0.2, y0=0.2, r=0.05, L=2.5, H=0.41, h=0.02, l=0.35, theta=0.2013579208;
+real x1=x0+r*cos(theta), y1=y0-h/2, x2=x1, y2=y0+h/2;
+real xoo=0.6,yoo=y0, err0, err1;
+
+
+// Fluid Region
+border a1(t=0,L) {x=t; y=0 ;label=1;};
+border a2(t=0,H) {x=L; y=t ;label=2;};
+border a3(t=L,0) {x=t; y=H ;label=1;};
+border a4(t=H,0) {x=0; y=t ;label=3;};
+//Hole
+border disc(t=theta, 2*pi-theta)  {x=x0+r*cos(t); y=y0+r*sin(t); label=4;};  
+//lines
+border l0(t=x1,0.6) {x=t; y=y1;label=5;};
+border l1(t=0.6,x2) {x=t; y=y2;label=5;};
+border l2(t=y1,y2) {x=0.6; y=t; label=5;};
+//border l2(t=-pi/2, pi/2)  {x=0.6+h/2*cos(t); y=y0+h/2*sin(t); label=5;}; 
+
+
+plot(a1(L*m/H)+a2(m)+a3(L*m/H)+a4(m)+disc(pi*mh/theta)+l0(-l*mh/h)+l1(-l*mh/h)+l2(-mh), wait=1, dim=2);
+
+mesh Thf = buildmesh(a1(L*m/H)+a2(m)+a3(L*m/H)+a4(m)+disc(-pi*mh/theta)+l0(-l*mh/h)+l1(-l*mh/h)+l2(-mh));
+plot(Thf, wait=1);
+
+// Solid Region
+border b4(t=theta,-theta) {x=x0+r*cos(t); y=y0+r*sin(t);label=6;};
+plot(l0(l*mh/h)+l1(l*mh/h)+l2(mh)+b4(mh), wait=1, dim=2);
+
+mesh Ths = buildmesh(l0(l*mh/h)+l1(l*mh/h)+l2(mh)+b4(mh));
+plot(Ths, wait=1);
+
+int[int] labs = [5];
+meshL ThL = extract(Thf, label=labs);
+plot(ThL, wait=1);
+
+mesh Thso=Ths, Thfo=Thf;
+
+fespace Vhf(Thf,[P2,P2,P1]);
+fespace Vhs(Ths,[P2,P2,P1]);
+
+fespace Vhfo(Thfo,[P2,P2,P1]);
+fespace Vhso(Thso,[P2,P2,P1]);
+
+fespace Whf(Thf,[P2,P2]);
+fespace Lh(ThL,[P2,P2]);
+
+Vhf [ux,uy,p], [uoldx,uoldy,pold]=[0,0,0];
+Whf [wx,wy]=[0,0], [whx,why];
+Vhs [usx,usy,q], [usoldx, usoldy, qold]=[0,0,0], [dispx, dispy, dq]=[0,0,0];
+
+Vhfo [uox,uoy,po];
+Vhso [usox,usoy,qo], [dispox,dispoy,dqo];
+
+Lh [ax, ay];
+
+macro vect(u) [u#x, u#y] //
+macro div(u) ( dx(u#x)+dy(u#y) ) //
+macro DD(u)  [[2*dx(u#x), dx(u#y)+dy(u#x)],[dx(u#y)+dy(u#x),2*dy(u#y)]] //
+macro Grad(u)[[dx(u#x),dy(u#x)],[dx(u#y),dy(u#y)]] // EOM
+
+
+fespace Dh(Ths, P2);
+Dh d2=0, xx=x, yy=y;
+
+int ioo;
+for(int i=0; i<d2[].n; i++){
+	if (sqrt((xx[][i]-xoo)^2+(yy[][i]-yoo))<1.e-6) ioo=i;
+}
+cout<<"======"<<ioo<<endl;
+
+  
+  
+varf fluid([ux,uy,p],[uhx,uhy,ph]) =
+         int2d(Thf)(rhof*vect(u)'*vect(uh)/dt- div(uh)*p -div(u)*ph + penal*p*ph 
+		    + muf/2*trace(DD(u)'*DD(uh)))
+     + on(1,4,ux=0, uy=0) + on(3,ux=12*y*(H-y)/H/H,uy=0);
+
+  
+varf resf([ux,uy,p],[uhx,uhy,ph]) = int2d(Thf)(rhof*[convect([uoldx-wx,uoldy-wy],-dt,uoldx), convect([uoldx-wx,uoldy-wy],-dt,uoldy)]'*vect(uh)/dt )
+       + on(1,4,ux=0, uy=0) + on(3,ux=12*y*(H-y)/H/H,uy=0);
+
+
+varf solid([usx,usy,q],[ushx,ushy,qh]) =
+  int2d(Ths)( rhos*vect(us)'*vect(ush)/dt - div(ush)*q -div(us)*qh + penal*q*qh 
+	+ mus/2*trace(DD(us)'*DD(ush))
+	- dt*c1*trace((Grad(us)'*Grad(disp)+Grad(disp)'*Grad(us))*Grad(ush)'))
+        + on(6,usx=0, usy=0);
+
+
+varf ress([usx,usy,q],[ushx,ushy,qh]) =
+  int2d(Ths)( rhos*vect(usold)'*vect(ush)/dt  - c1*trace((DD(disp) - Grad(disp)'*Grad(disp))*Grad(ush)') )
+	+ on(6,usx=0, usy=0);
+
+
+
+varf fa([ux,uy,p],[ahx,ahy]) = int1d(ThL)(vect(u)'*vect(ah));
+
+varf sa([usx,usy,q],[ahx,ahy]) = -int1d(ThL)(vect(us)'*vect(ah));
+
+
+varf fs([ux,uy,p],[usx,usy,q]) = int2d(Ths)(0.*ux*usx);
+varf aa([ax,ay],[ahx,ahy]) = int1d(ThL)(0.*ax*ahx);
+
+
+problem elastic([wx,wy],[whx,why])= int2d(Thf)(
+	trace(10*DD(w)*DD(wh)') + div(w)*div(wh) )
+	+ on(5,wx=ux,wy=uy)  + on(2,3, wx=0) + on(1, wy=0) + on(4, wx=0,wy=0);
+
+
+
+int undof = Vhf.ndof;
+int usndof = Vhs.ndof;
+int andof = Lh.ndof;
+int tndof = undof + usndof + andof;
+
+real[int] f(tndof);
+real[int] sol(tndof);
+
+
+ofstream file("lm1.txt");
+file.precision(16);
+
+real tgv=1.e30;
+for(n=0;n<=NN;n++){
+  
+  	cout<<"FSI Time Step: "<<n<<endl;
+	
+
+	matrix FF=fluid(Vhf, Vhf, tgv=tgv);
+	matrix SS=solid(Vhs, Vhs, tgv=tgv);
+	matrix FA=fa(Vhf, Lh);
+	matrix SA=sa(Vhs, Lh);
+
+	matrix FS=fs(Vhf, Vhs);
+	matrix AA=aa(Lh, Lh);
+
+        real[int] Ff = resf(0,Vhf, tgv=tgv);
+        real[int] Sf = ress(0,Vhs, tgv=tgv);
+	
+
+	matrix M=[[FF, FS', FA'],
+		    [FS, SS, SA'],
+		    [FA, SA, AA]];
+
+
+
+	f(0:undof - 1) = Ff;
+	f(undof: undof + usndof - 1) =Sf;
+ 
+
+	set(M, solver=UMFPACK);
+	sol = M^-1*f;
+	ux[] = sol(0:undof - 1);
+	usx[] = sol(undof:undof+usndof-1);
+	ax[] = sol(undof+usndof:tndof-1);
+
+
+	plot(ux,Thf,coef=0.1,fill=1,value=1,wait=0);
+
+	//plot(usx,Ths,coef=0.1,fill=1,value=1,wait=1);
+
+	//plot(ax,ThL,coef=0.1,fill=1,value=1,wait=1,dim=2,cmm="Lagrange Multiplier");
+
+
+	if (n % saveEach == 0){
+		int k=n/saveEach;
+		savevtk(outputFileName+"fluid"+k+".vtk", Thf, ux,uy,p,wx,wy, dataname="ux uy p wx wy", order=orderOutF);
+		savevtk(outputFileName+"solid"+k+".vtk", Ths, usx,usy,q,dispx,dispy, dataname="usx usy q dispx dispy", order=orderOutS);
+		//	savevtk(outputFileName+"lagrange"+k+".vtk", ThL, ax,ay, dataname="ax ay", order=orderOutL);		
+	}
+	
+	
+	elastic;
+  
+	//plot(wy,Thf,coef=0.1,fill=1,value=1,wait=1, cmm="mesh velocity");
+	
+	Thfo=Thf; [uox,uoy,po] = [ux,uy,p];
+        Thf = movemesh(Thfo, [x+wx*dt, y+wy*dt]);  ThL = extract(Thf, label=labs);
+	[ux,uy,p]=[0,0,0];  ux[]=uox[];
+
+	
+	Thso=Ths; [usox,usoy,qo] = [usx,usy,q]; [dispox,dispoy,dqo] = [dispx,dispy,dq];		
+	Ths = movemesh(Thso, [x+usox*dt, y+usoy*dt]);
+	[usx,usy,q]=[0,0,0];  usx[]=usox[];
+	[dispx, dispy, dq]=[0,0,0];  dispx[]=dispox[]+usox[]*dt; 
+
+	
+	[uoldx,uoldy,pold] = [ux,uy,p]; [usoldx,usoldy,qold] = [usx,usy,q];
+	
+	//plot(ux,Thf,coef=0.1,fill=1,value=1,wait=1);
+	//plot(dispx,Ths,coef=0.1,fill=1,value=1,wait=1, cmm="displacment");
+
+	d2 = dispy;
+	file <<d2[][ioo]<< endl;
+}
+
+file.flush;
+

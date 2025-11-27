@@ -1,0 +1,171 @@
+// FSI with same variable for fluid and structure
+// hyperelastic solid in a rotating fluid due to outer boundary rotation
+load "Curvature"
+load "isoline"
+load "iovtk"
+verbosity=0;
+string outputFileName = "output/"; 
+int[int] orderOut = [1,1,1,1,1,1];
+
+real g=-981, R=0.25,Area=pi*R*R, Lx=1, Ly=4, H=Ly-2*R, xc=0, yc=H;
+int m=40, n,  NN=1000, remesh=1, saveEach=10;
+real muf=1, mus=200, c1=200,  penal=0, T=2, dt=T/NN;
+real rhof=1, rhos=1.2, rhod=rhos-rhof;
+real beta =0.005, gamma=1000, eta=0, vv=0;
+        
+// Fluid region
+border b1(t=-Lx,Lx) { x=t; y=0 ;label=1;};
+border b2(t=0,Ly) { x=Lx; y=t ;label=2;};
+border b3(t=Lx,-Lx) { x=t; y=Ly ;label=3;};
+border b4(t=Ly,0) { x=-Lx; y=t ;label=4;};
+border disc(t=0, 2*pi)  {x=xc+R*cos(t); y=yc+R*sin(t); label=5;};  
+
+mesh Th = buildmesh(b1(m/2)+b2(m)+b3(m)+b4(m)+disc(5*m));
+plot(Th, wait=1);
+
+
+fespace Vh(Th,P2);
+fespace Ph(Th, P1);
+fespace Rh(Th,[P2,P2,P1]);
+
+Ph p,ph;
+Vh uu,u,v,uh,vh,uold=0,vold=0,d1=0,d2=0;
+func dd=sqrt((x-xc)*(x-xc)+(y-yc)*(y-yc)) - R;
+Vh phi, phih, phiold;
+//phiold=(dd<0) ? 1 : 0 ;
+phiold = 1/(1 + exp(100*dd));
+plot(Th,phiold,coef=0.1,fill=1,value=1,wait=1);
+	
+
+macro div(u,v) ( dx(u)+dy(v) ) // EOM
+macro grad(u)[dx(u),dy(u)] // EOM
+macro DD(u,v)  [[2*dx(u),div(v,u)],[div(v,u),2*dy(v)]] // EOM
+macro Grad(u,v)[[dx(u),dy(u)],[dx(v),dy(v)]] // EOM
+macro f(u) u*(u-1)*(2*u-1) // EOM
+macro df(u) ( (u-1)*(2*u-1)+u*(2*u-1)+2*u*(u-1) )//
+macro CC(u) [[dx(u)*dx(u),dx(u)*dy(u)],[dy(u)*dx(u),dy(u)*dy(u)]] // EOM
+
+
+/////////////////////////////////////////////////////////////////
+//real  mingridsize=0.02, maxgridsize=0.2;
+//Th = adaptmesh(Th,grad(phiold),nbvx=100000,hmin=mingridsize, ratio=1.2) ;
+//plot(Th, wait=1);
+//phiold = phiold; uold=0;vold=0;d1=0;d2=0;
+//////////////////////////////////////////////////////////////
+
+varf phase(phi,phih) =
+	int2d(Th)(phi*phih/dt 
+	+ beta*grad(phi)'*grad(phih) 
+	+ gamma* df(phiold)*phi*phih
+	)
+  +int2d(Th)( convect([uold,vold],-dt,phiold)*phih/dt
+	       - gamma*f(phiold)*phih + gamma*df(phiold)*phiold*phih
+	      )
+  + on(1,2,3,4,phi=0);
+
+
+varf xi(phi,phih) = int2d(Th)(phih);
+
+
+varf fsi([u,v,p],[uh,vh,ph]) =
+  int2d(Th)((rhos*phi+rhof*(1-phi))*[u,v]'*[uh,vh]/dt- div(uh,vh)*p -div(u,v)*ph  + penal*p*ph 
+	    + (mus*phi+muf*(1-phi))/2*trace(DD(u,v)'*DD(uh,vh))
+            + phi*dt*c1*trace((DD(u,v) - Grad(u,v)'*Grad(d1,d2)
+  	    - Grad(d1,d2)'*Grad(u,v))*Grad(uh,vh)')
+	    )
+  + on(1,2,4,u=0,v=0);
+
+varf res([u,v,p],[uh,vh,ph]) =
+	int2d(Th)(rhod*phi*g*vh +(rhos*phi+rhof*(1-phi))*[convect([uold,vold],-dt,uold),convect([uold,vold],-dt,vold)]'*[uh,vh]/dt
+		  - phi*c1*trace((DD(d1,d2) 
+		  - Grad(d1,d2)'*Grad(d1,d2))*Grad(uh,vh))
+		  - eta*trace(CC(phi)'*Grad(uh,vh))
+			     )
+  + on(1,2,4,u=0,v=0);
+
+ofstream file("vel_phase7.txt");
+file.precision(16);
+
+for(n=0;n<=NN;n++){
+
+  /*  
+       int undof = Vh.ndof;
+       int tndof = undof + 1;
+       real[int] lm(undof);
+       lm = xi(0, Vh);
+
+       real[int] sol(tndof);
+       real[int] fb(tndof);
+       fb(0:undof)=0;
+
+       matrix B = phase(Vh, Vh, tgv=1.e30);
+       real[int] b = phase(0, Vh, tgv=1.e30);
+	matrix M = [[B,lm],
+		   [lm',0]];
+	set(M, solver=UMFPACK);
+	fb(0:undof-1)=b;
+	fb(undof-1:undof)=Area;
+	sol = M^-1 * fb;
+	phi[] = sol(0:undof-1);
+
+
+	phi = (phi> 1) ? 1 : phi;
+	phi = (phi<0) ? 0 : phi;
+	//real phimin=phi[].min;
+	//if (phimin<0) phi[] +=  phimin;
+	//real phimax =phi[].max;	
+	//phi[] /= phimax;
+	
+*/
+
+  phi = 1/(1 + exp(500*dd));
+  
+  //phi = (dd> 0) ? 0 : 1;
+
+	
+	
+	cout<<"Time step: "<<n<<", "<<"Area: "<<int2d(Th)(phi)/Area<<endl;
+	
+	//plot(Th,phi,coef=0.1,fill=1,value=1,wait=0);
+	
+	matrix A = fsi(Rh,Rh,tgv=-1);
+	real[int] rh = res(0,Rh,tgv=-1);
+	
+	set(A,solver=UMFPACK);
+	Rh [w1, w2, wp];
+	w1[] = A^-1 * rh;
+	u=w1; v= w2; p=wp;
+
+	
+	//file <<v(xc,yc)<< endl;
+
+	vv = int2d(Th)(phi*v)/int2d(Th)(phi);
+	file << vv <<endl;
+	
+	
+	if((n+1)%remesh == 0){
+	  //Th = adaptmesh(Th,grad(phi),nbvx=100000,hmin=mingridsize, ratio=1.2) ;
+	  //yc +=  dt*v(xc,yc);
+	  yc += dt*vv;
+	  Th = buildmesh(b1(m/2)+b2(m)+b3(m/2)+b4(m)+disc(5*m));
+	  u=u; v=v; p=p; phi=phi; d1=d1; d2=d2;
+	}
+	d1 = d1 + u*dt;
+	d2 = d2 + v*dt;
+
+	
+	uold=u; vold=v; phiold=phi;
+	
+	//uu=sqrt(u^2+v^2);
+	 plot(Th,v,coef=0.1,fill=0,value=1,wait=0);
+
+	if (n % saveEach == 0){
+		int k=n/saveEach;
+		savevtk(outputFileName+"fsi"+k+".vtk", Th, u,v,p,phi,d1,d2, dataname="u v p phi d1 d2", order=orderOut);		
+	}	
+
+	
+}
+
+
+file.flush;

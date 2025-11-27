@@ -1,0 +1,112 @@
+// Two-mesh FSI with same variable for fluid and structure
+load "Curvature"
+load "isoline"
+load "iovtk"
+
+verbosity=0;
+string outputFileName = "output/"; 
+int[int] orderOut = [1,1,1];
+int[int] orderOutS = [1,1];
+
+
+real g=981, R=0.25, Lx=1, Ly=4, H=Ly-2*R;
+int m=20, n,  NN=500, saveEach=5, remesh=20;
+real nu=1, c1=60,  penal=1e-9, T=2, dt=T/NN;
+real rhof=1, rhos=1.2, xc=0, yc=H;
+
+
+// solid region
+border C(t=0, 2*pi)  { x=R*cos(t); y=H+R*sin(t) ;label=5;};         
+// Fluid region
+border b1(t=-Lx,Lx) { x=t; y=0 ;label=1;};
+border b2(t=0,Ly) { x=Lx; y=t ;label=2;};
+border b3(t=Lx,-Lx) { x=t; y=Ly ;label=3;};
+border b4(t=Ly,0) { x=-Lx; y=t ;label=4;};
+
+mesh th = buildmesh( C(m*4)+b1(m)+b2(m*2)+b3(m)+b4(m*2));
+
+int fluid=th(0,0.1).region, solid=th(0,H+R).region;
+mesh ths=trunc(th,region==solid);
+mesh thsold=ths, thold=th;
+mesh thf=trunc(th,region==fluid);
+
+fespace V2h(th,P2);
+fespace Vh(th,P1);
+fespace V2hs(ths,P2);
+fespace V2hsold(thsold,P2);
+
+cout << "# nodes:" << V2h.ndof << endl;
+cout << "# elements"<< V2h.nt << endl;
+plot(th, wait=0);
+
+
+Vh p,ph;
+V2h w1=0,w2=0, w1h,w2h, u,v,uh,vh, uold=0, vold=0,uu;
+V2hs d1=0,d2=0; 
+V2hsold do1,do2, uso,vso,uo,vo;// used to keep data on an old mesh
+
+
+macro div(u,v) ( dx(u)+dy(v) ) // EOM
+macro DD(u,v)  [[2*dx(u),div(v,u)],[div(v,u),2*dy(v)]] // EOM
+macro Grad(u,v)[[dx(u),dy(u)],[dx(v),dy(v)]] // EOM
+
+problem aa([u,v,p],[uh,vh,ph]) =
+	int2d(th,solid)(  rhos*[u,v]'*[uh,vh]/dt - div(uh,vh)*p  - div(u,v)*ph 	+ penal*p*ph 
+				   + dt*c1*trace((DD(u,v) - Grad(u,v)*Grad(d1,d2)' - Grad(d1,d2)*Grad(u,v)')*DD(uh,vh))) 
+  + int2d(th,solid)( g*rhos*vh + c1*trace((DD(d1,d2) - Grad(d1,d2)*Grad(d1,d2)')*DD(uh,vh))  
+      	- rhos*[convect([uold,vold],-dt,uold), convect([uold,vold],-dt,vold)]'*[uh,vh]/dt )
+
+  + int2d(th,fluid)( rhof*[u,v]'*[uh,vh]/dt- div(uh,vh)*p -div(u,v)*ph + penal*p*ph  + nu/2*trace(DD(u,v)'*DD(uh,vh)))
+  + int2d(th,fluid)( g*rhof*vh  - rhof*[convect([uold,vold],-dt,uold),	convect([uold,vold],-dt,vold)]'*[uh,vh]/dt )
+  + int2d(thold)([w1,w2]'*Grad(uh,vh)*[u,v] )
+  + on(1,2,4,u=0,v=0);
+  
+
+problem elastic([w1,w2],[w1h,w2h])= int2d(th)(trace(10*DD(w1,w2)*DD(w1h,w2h)') + div(w1,w2)*div(w1h,w2h) )
+  + on(5,w1=u,w2=v)  + on(2,4, w1=0) + on(1,3, w2=0);
+									  
+// Ttime loop
+ofstream file("vel_ale.txt");
+file.precision(16);
+
+for(n=0;n<=NN;n++){
+  thold=th; thsold=ths;
+  aa; 
+  elastic;
+  uo=u; vo=v;
+  do1=d1; do2=d2;
+
+  file <<v(xc,yc)<< endl;
+  yc += v(xc,yc)*dt;
+      
+  th = movemesh(th, [x+w1*dt, y+w2*dt]);
+  ths=trunc(th,region==solid);
+  thf = trunc(th,region==fluid);
+  if((n+1)%remesh == 0){
+    th = adaptmesh(th,u,v,abserror=1,nbjacoby=2, err=0.025, nbvx=50000, hmax=0.25, omega=1.8, ratio=1.5, nbsmooth=3,splitpbedge=1, maxsubdiv=5,rescaling=1) ;
+    ths=trunc(th,region==solid); 
+    thf = trunc(th,region==fluid);
+    u=u; v=v; d1=d1;d2=d2; uo=uo; vo=vo;do1=do1; do1=do2; 
+    thold=th; thsold=ths;
+    cout << "# nodes:" << V2h.ndof << endl;
+    cout << "# elements"<< V2h.nt << endl;
+  }  else{		
+    d1=0; d1[]=do1[]+uo[]*dt; 
+    d2=0; d2[]=do2[]+vo[]*dt;
+  }
+  
+    uold=u;vold=v;
+    uu=sqrt(u^2+v^2);
+    plot(th,uu,coef=0.01,fill=0,value=1);
+    cout<<n<<"=n   volume="<<int2d(ths)(1.)/pi/R/R<<endl;
+ 
+
+	if (n % saveEach == 0){
+		int k=n/saveEach;
+		savevtk(outputFileName+"fsi"+k+".vtk", th, u,v,p, dataname="u v p", order=orderOut);
+		savevtk(outputFileName+"solid"+k+".vtk", ths, d1,d2, dataname="d1 d2", order=orderOutS);
+	}
+	
+}
+
+file.flush;

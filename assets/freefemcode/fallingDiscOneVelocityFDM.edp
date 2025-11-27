@@ -1,0 +1,120 @@
+// Two-mesh FSI with same variable for fluid and structure
+load "Curvature"
+load "isoline"
+load "iovtk"
+verbosity=0;
+string outputFileName = "output/"; 
+int[int] orderOut = [1,1,1];
+int[int] orderOutS = [1,1,1,1];
+
+real g=-981, R=0.25, Lx=1, Ly=4, H=Ly-2*R;
+int m=6, n,  NN=500, saveEach=5;
+real nu=1, c1=60,  penal=1e-9, T=2, dt=T/NN;
+real rhof=1, rhos=1.2, rhod=rhos-rhof;
+
+// solid region
+border a1(t=0, 2*pi)  { x=R*cos(t); y=H+R*sin(t); label=4;};         
+// Fluid region
+border b1(t=-Lx,Lx) { x=t; y=0 ;label=1;};
+border b2(t=0,Ly) { x=Lx; y=t ;label=2;};
+border b3(t=Lx,-Lx) { x=t; y=Ly ;label=3;};
+border b4(t=Ly,0) { x=-Lx; y=t ;label=4;};
+
+mesh th = buildmesh(b1(m*6)+b2(m*12)+b3(m*6)+b4(m*12));
+plot(th, wait=1);
+//plot(b1(m*6)+b2(m*12)+b3(m*6)+b4(m*12),wait=1);
+
+mesh ths = buildmesh(a1(m*5) );
+plot(ths, th, wait=1);
+
+mesh thsold=ths;
+
+fespace V2h(th,P2);
+fespace Vh(th,P1);
+fespace V2hs(ths,P1);
+fespace V2hsold(thsold,P1);
+fespace Rh(th,[P2,P2,P1]);
+
+
+
+Vh p,ph;
+V2h uu,u,v,uh,vh,uold=0,vold=0;
+V2hs us,vs, d1=0,d2=0, xx=x,yy=y; 
+V2hsold do1,do2,uso,vso;// used to keep data on an old mesh
+
+
+int ioo=0;
+for(int i=0; i<xx[].n; i++){
+	if (sqrt((xx[][i])^2+(xx[][i]-H)^2)<1.e-6) ioo=i;;
+}
+cout<<"======"<<ioo<<endl;
+
+
+
+macro div(u,v) ( dx(u)+dy(v) ) // EOM
+macro DD(u,v)  [[2*dx(u),div(v,u)],[div(v,u),2*dy(v)]] // EOM
+macro Grad(u,v)[[dx(u),dy(u)],[dx(v),dy(v)]] // EOM
+
+
+varf fsi([u,v,p],[uh,vh,ph]) =
+	int2d(th)(rhof*[u,v]'*[uh,vh]/dt- div(uh,vh)*p -div(u,v)*ph + penal*p*ph 
+	+ nu/2*trace(DD(u,v)'*DD(uh,vh)))
+	+ int2d(ths,qft=qf9pT)( rhod*[u,v]'*[uh,vh]/dt
+	+ dt*c1*trace((DD(u,v) - Grad(u,v)'*Grad(d1,d2)
+	- Grad(d1,d2)'*Grad(u,v))*Grad(uh,vh)'))
+	+ on(1,2,4,u=0,v=0);
+
+varf res([u,v,p],[uh,vh,ph]) =
+	int2d(th)(g*rhof*vh+rhof*[convect([uold,vold],-dt,uold),
+	convect([uold,vold],-dt,vold)]'*[uh,vh]/dt )
+	+ int2d(ths,qft=qf9pT)(g*rhod*vh - c1*trace((DD(d1,d2) 
+	- Grad(d1,d2)'*Grad(d1,d2))*Grad(uh,vh))  
+	+ rhod*[uold,vold]'*[uh,vh]/dt )	
+	+ on(1,2,4,u=0,v=0);
+
+
+tgv = 1e30;
+matrix A = fsi(Rh,Rh,tgv=tgv);
+real[int] rhs = res(0,Rh);
+
+
+ofstream file("vel_interpolation.txt");
+file.precision(16);
+
+for(n=0;n<=NN;n++){
+	cout<<"Time step: "<<n<<","<<dt<<endl;
+	rhs = res(0,Rh);
+	A = fsi(Rh,Rh);
+	
+	set(A,solver=UMFPACK);
+	
+	Rh [w1, w2, wp];
+	real[int] sol(Rh.ndof);
+	sol= w1[];
+	sol = A^-1 * rhs;
+	w1[]=sol; u=w1; v= w2; p=wp;
+
+	us=u; vs=v;
+	
+	thsold=ths;
+	do1=d1; do2=d2; uso=us;vso=vs;
+	ths = movemesh(ths, [x+us*dt, y+vs*dt]);
+	d1=0; d1[]=do1[]+uso[]*dt;
+	d2=0; d2[]=do2[]+vso[]*dt;
+	us=0; us[]=uso[];
+	vs=0; vs[]=vso[];
+
+	uold=u;vold=v;
+	uu=sqrt(u^2+v^2);
+	plot(th, ths,uu,coef=0.1,fill=0,value=1,wait=0);
+
+	
+	if (n % saveEach == 0){
+		int k=n/saveEach;
+		savevtk(outputFileName+"fsi"+k+".vtk", th, u,v,p, dataname="u v p", order=orderOut);
+		savevtk(outputFileName+"solid"+k+".vtk", ths, us,vs,d1,d2, dataname="us vs d1 d2", order=orderOutS);
+	}
+
+	file <<vs[][ioo]<< endl;	
+}
+file.flush;

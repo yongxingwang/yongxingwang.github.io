@@ -1,0 +1,135 @@
+// Two-mesh FSI with Distributed Lagrange Multiplier
+load "Curvature"
+load "isoline"
+load "iovtk"
+verbosity=0;
+string outputFileName = "output/"; 
+int[int] orderOut = [1,1,1];
+int[int] orderOutS = [1,1];
+
+
+real R=0.25, Lx=1, Ly=4, H=Ly-2*R;
+int m=6, n,  NN=500, saveEach=5;
+real rhof=1, rhos=1.2, nu=1, penal=1e-9;
+real nv=0.3, mu=1e8, lambda=2*nv*mu/(1-2*nv); 
+real g=-981;
+real T=2, dt=T/NN, dt2=dt*dt;
+real c1=10, c2=10;
+
+
+border b1(t=-Lx,Lx) { x=t; y=0 ;label=1;};
+border b2(t=0,Ly) { x=Lx; y=t ;label=2;};
+border b3(t=Lx,-Lx) { x=t; y=Ly ;label=3;};
+border b4(t=Ly,0) { x=-Lx; y=t ;label=4;};
+
+mesh Thf = buildmesh(b1(m*6)+b2(m*12)+b3(m*6)+b4(m*12));
+border C(t=0,2*pi){ x=R*cos(t); y=H+R*sin(t); label=5;};    
+mesh Thsi = buildmesh(C(m)); // Initial solid domain
+fespace Whi(Thsi,P1); 
+Whi Xoi=x,Yoi=y;
+
+
+mesh Ths = buildmesh(C(m*5));
+mesh Thso=Ths;
+
+plot(Thf,Thso, cmm="Initial configuration");
+
+
+fespace Vh(Thf,P1b);  // velocity
+fespace Qh(Thf,P1);  // pressure
+fespace Wh(Ths,P1b);  // Lagrangian coordinates X,Y
+fespace Lh(Ths,P1);  // Lagrangian multiplier
+fespace Zh(Thf,[P1b,P1b,P1]); // fluid
+fespace Rh(Ths,[P1,P1,P1b,P1b]);// solid
+
+Vh u,v,uh,vh;
+Qh p,ph;
+Wh  Xoo=x-0.*(x),Yoo= y-0.*(y-H);
+Rh [lamx,lamy,X,Y],[lamxo,lamyo,Xo,Yo]=[0,0,x,y];
+Zh [uo,vo,po]=[0,0,0];
+
+int ioo=0;
+for(int i=0; i<Xoo[].n; i++){
+	if (sqrt((Xoo[][i])^2+(Yoo[][i]-H)^2)<1.e-6) ioo=i;
+}
+cout<<Xoo[].n<<"======"<<ioo<<endl;
+
+
+macro div(u,v) ( dx(u)+dy(v) ) // EOM
+macro Grad(u,v)[[dx(u),dy(u)],[dx(v),dy(v)]] // EOM
+macro DD(u,v)  [[2*dx(u),div(v,u)],[div(v,u),2*dy(v)]] // EOM
+
+varf aa([u,v,p],[uh,vh,ph]) =
+          int2d(Thf)(rhof*[u,v]'*[uh,vh]/dt- div(uh,vh)*p -div(u,v)*ph
+                     + penal*p*ph + nu*trace(DD(uh,vh)'*DD(u,v))/2)
+  + on(1,2,4,u=0,v=0);
+
+varf bb([lamx,lamy,X,Y],[lamxh,lamyh,Xh,Yh]) =
+          int2d(Ths)((rhos-rhof)*(X*Xh+Y*Yh)/dt2
+                     - c1*trace(Grad(lamx,lamy)'*Grad(Xh,Yh)) - c2*(lamx*Xh+lamy*Yh)
+                     - c1*trace(Grad(lamxh,lamyh)'*Grad(X,Y))/dt - c2*(lamxh*X+lamyh*Y)/dt
+                     + mu*trace(DD(X,Y)'*DD(Xh,Yh))/2 + lambda*div(X,Y)*div(Xh,Yh)
+					 + penal*(lamx*lamxh+lamy*lamyh));
+
+varf ab([u,v,p],[lamxh,lamyh,Xh,Yh]) =
+          int2d(Ths,qft=qf9pT,mapu=[Xo,Yo])(
+                       c1*trace(Grad(lamxh,lamyh)'*(Grad(Xo,Yo)*Grad(u,v)))
+                     + c2*(lamxh*u+lamyh*v));
+
+varf ba([lamx,lamy,X,Y],[uh,vh,ph]) =
+          int2d(Ths,qft=qf9pT,mapt=[Xo,Yo])(
+                       c1*trace(Grad(lamx,lamy)'*(Grad(Xo,Yo)*Grad(uh,vh)))
+                     + c2*(lamx*uh+lamy*vh));
+
+varf rhs1([u,v,p],[uh,vh,ph]) =
+          int2d(Thf)(rhof*convect([uo,vo],-dt,uo)*uh/dt
+                     + rhof*convect([uo,vo],-dt,vo)*vh/dt)
+  + on(1,2,4,u=0,v=0);
+
+varf rhs2([lamx,lamy,X,Y],[lamxh,lamyh,Xh,Yh]) =
+          int2d(Ths)((rhos-rhof)*g*Yh + 2*(mu+lambda)*div(Xh,Yh)
+                     - c1*trace(Grad(lamxh,lamyh)'*Grad(Xo,Yo))/dt
+                     - c2*(lamxh*Xo+lamyh*Yo)/dt
+                     - (rhos-rhof)*((Xoo-2*Xo)*Xh+(Yoo-2*Yo)*Yh)/dt2);
+
+
+
+
+ofstream file("vel_lm.txt");
+file.precision(16);
+
+for(n=0;n<=NN;n++){
+                real[int] RHS1 = rhs1(0,Zh);
+                real[int] RHS2 = rhs2(0,Rh);
+                matrix AA = aa(Zh,Zh);
+                matrix AB = ab(Zh,Rh);
+                matrix BA = ba(Rh,Zh);
+                matrix BB = bb(Rh,Rh);
+                matrix AABB = [ [AA,BA], [AB,BB] ];
+                set(AABB,solver=sparsesolver,master=-1);
+                real[int] rhs = [RHS1, RHS2];
+                real[int] w=AABB^-1*rhs;
+                Xoo=Xo; Yoo=Yo;  Xoi=Xo; Yoi=Yo;
+ 		[uo[],lamxo[]] = w;
+                //Thso = buildmesh(D(nn));
+		//Thf= buildmesh(a1(W*n/2)+a2(H*n)+a3(W*n)+a4(H*n)+D(nn));
+		[uo,vo,po]=[uo,vo,po]; [lamxo,lamyo,Xo,Yo]=[lamxo,lamyo,Xo,Yo];
+		cout<<"Time step: "<<n<<", "<<int2d(Thso)(Yo-Yoo)/R/R/pi/dt<<" "<<int2d(Thso)(vo)/R/R/pi<<" area= "<<int2d(Thso)(1.)/R/R/pi<<endl;
+                uh=sqrt(uo*uo+vo*vo);
+                plot(Thf, Thso, uh, value=1, fill=0, coef=100, cmm="step="+n+"    Velocity");
+
+		
+	if (n % saveEach == 0){
+		int k=n/saveEach;
+		savevtk(outputFileName+"fsi"+k+".vtk", Thf, uo,vo,po, dataname="u v p", order=orderOut);
+		savevtk(outputFileName+"solid"+k+".vtk", Ths, Xoo,Yoo, dataname="d1 d2", order=orderOutS);
+	}
+
+
+	file <<Yoo[][ioo]<< endl;
+		
+}
+
+
+
+file.flush;

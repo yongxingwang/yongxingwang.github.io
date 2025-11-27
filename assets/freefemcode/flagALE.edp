@@ -1,0 +1,140 @@
+load "Curvature"
+load "isoline"
+load "iovtk"
+verbosity=0;
+string outputFileName = "output/"; 
+int[int] orderOutF = [1,1,1,1,1];
+int[int] orderOutS = [1,1,1,1,1];
+
+
+int n, mh=3, m=15, NN=6000, saveEach=30;
+real muf=1,c1=2.e6,penal=0.0,g=-0,rhof=1.e3,rhos=1.e3;
+real T=6, dt=T/NN, mus=dt*c1;
+real x0=0.2, y0=0.2, r=0.05, L=2.5, H=0.41, h=0.02, l=0.35, theta=0.2013579208;
+real x1=x0+r*cos(theta), y1=y0-h/2, x2=x1, y2=y0+h/2;
+real alpha=1.e-18, xoo=0.6,yoo=y0;
+
+
+// Fluid Region
+border a1(t=0,L) {x=t; y=0 ;label=1;};
+border a2(t=0,H) {x=L; y=t ;label=2;};
+border a3(t=L,0) {x=t; y=H ;label=1;};
+border a4(t=H,0) {x=0; y=t ;label=3;};
+//Hole
+border disc(t=theta, 2*pi-theta)  {x=x0+r*cos(t); y=y0+r*sin(t); label=4;};  
+
+// Solid Region
+border b1(t=x1,0.6) {x=t; y=y1 ;label=5;};
+border b2(t=y1,y2) {x=0.6; y=t ;label=5;};
+border b3(t=0.6,x2) {x=t; y=y2 ;label=5;};
+border b4(t=theta,-theta) {x=x0+r*cos(t); y=y0+r*sin(t);label=4;};
+//plot(b1(l*mh/h)+b2(mh)+b3(l*mh/h)+b4(mh), wait=1, dim=2);
+func flag = b1(-l*mh/h)+b2(-mh)+b3(-l*mh/h)+b4(mh);
+
+mesh Th = buildmesh(flag+a1(L*m/H)+a2(m)+a3(L*m/H)+a4(m)+disc(-pi*mh/theta));
+plot(Th, wait=1);
+
+int fluid=Th(0.01,0.01).region, solid=Th(x0+r+l/2,y0).region;
+cout<<"region number: "<<fluid<<"   "<<solid<<endl;
+
+mesh Ths = trunc(Th,region==solid); plot(Ths,wait=1);
+
+mesh Thso=Ths, Thold=Th;
+fespace Vh(Th,P2);
+fespace Ph(Th,P1);
+fespace Vhs(Ths,P2);
+fespace Vhso(Thso,P2);
+fespace Rh(Th,[P2,P2,P1]);
+
+Ph p,ph;
+Vh u,v,uh,vh,uold=0,vold=0, w1=0,w2=0, w1h,w2h,uu;
+Vhs d1=0,d2=0,xx=x,yy=y; 
+Vhso uso,vso,do1,do2;
+
+int ioo;
+for(int i=0; i<d2[].n; i++){
+	if (sqrt((xx[][i]-xoo)^2+(yy[][i]-yoo))<1.e-6) ioo=i;
+}
+cout<<"======"<<ioo<<endl;
+
+macro div(u,v) ( dx(u)+dy(v) ) // EOM
+macro DD(u,v)  [[2*dx(u),div(v,u)],[div(v,u),2*dy(v)]] // EOM
+macro Grad(u,v)[[dx(u),dy(u)],[dx(v),dy(v)]] // EOM
+
+
+varf fsi([u,v,p],[uh,vh,ph]) =
+	int2d(Th,fluid)(rhof*[u,v]'*[uh,vh]/dt - div(uh,vh)*p -div(u,v)*ph + penal*p*ph 
+	+ muf/2*trace(DD(u,v)'*DD(uh,vh)))
+	
+	+int2d(Th,solid)( rhos*[u,v]'*[uh,vh]/dt - div(uh,vh)*p -div(u,v)*ph + penal*p*ph 
+	+ mus/2*trace(DD(u,v)'*DD(uh,vh))
+	- dt*c1*trace((Grad(u,v)'*Grad(d1,d2)+Grad(d1,d2)'*Grad(u,v))*Grad(uh,vh)'))
+	
+	+ int2d(Thold)([w1,w2]'*Grad(uh,vh)*[u,v] )
+	
+	+ on(1,u=0, v=0) + on(3,u=12*y*(H-y)/H/H,v=0) + on(4,u=0,v=0);
+
+varf res([u,v,p],[uh,vh,ph]) =
+	int2d(Th,fluid)(g*rhof*vh+rhof*[convect([uold,vold],-dt,uold),
+	convect([uold,vold],-dt,vold)]'*[uh,vh]/dt )
+	
+	+int2d(Th,solid)( g*rhos*vh+rhos*[convect([uold,vold],-dt,uold),
+	convect([uold,vold],-dt,vold)]'*[uh,vh]/dt 
+	- c1*trace((DD(d1,d2) - Grad(d1,d2)'*Grad(d1,d2))*Grad(uh,vh)') )
+	
+	+ on(1,u=0, v=0) + on(3,u=12*y*(H-y)/H/H,v=0) + on(4,u=0,v=0);
+
+
+problem elastic([w1,w2],[w1h,w2h])= int2d(Th)(
+	trace(10*DD(w1,w2)*DD(w1h,w2h)') + div(w1,w2)*div(w1h,w2h) )
+	+ on(5,w1=u,w2=v)  + on(2,3, w1=0) + on(1, w2=0) + on(4, w1=0,w2=0);
+
+
+ofstream file("ale.txt");
+file.precision(16);
+
+for(n=0;n<=NN;n++){
+
+  	cout<<"FSI Time Step: "<<n<<endl;
+	  
+	real[int] rhs = res(0,Rh);
+	matrix A = fsi(Rh,Rh);
+	set(A,solver=UMFPACK);
+
+	Rh [ut, vt, pt];
+	real[int] sol(Rh.ndof);
+	sol= ut[];
+	sol = A^-1 * rhs;
+	ut[]=sol; u=ut; v= vt; p=pt;
+
+
+	if (n % saveEach == 0){
+		int k=n/saveEach;
+		savevtk(outputFileName+"fluid"+k+".vtk", Th, u,v,p,w1,w2, dataname="ux uy p wx wy", order=orderOutF);
+		savevtk(outputFileName+"solid"+k+".vtk", Ths, u,v,p,d1,d2, dataname="usx usy q dispx dispy", order=orderOutS);		
+	}
+
+	
+	elastic;
+
+	Thso=Ths; Thold=Th;
+	uso=u; vso=v; do1=d1; do2=d2;
+		
+	
+	Th = movemesh(Th, [x+w1*dt, y+w2*dt]);
+	Ths = trunc(Th,region==solid);
+	
+	d1=0;  d1[]=do1[]+uso[]*dt; 
+	d2=0;  d2[]=do2[]+vso[]*dt; 
+
+	
+	uold=u;vold=v;
+	
+	uu=sqrt(u^2+v^2);
+	plot(Th,uu,coef=0.1,fill=1,value=1,wait=0);
+
+
+	file <<d2[][ioo]<< endl;	
+}
+
+file.flush;
