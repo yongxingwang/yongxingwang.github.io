@@ -13,7 +13,14 @@ title: "MCF"
             <span class="ptitle">Shrinking Torus</span>
             <img src="/assets/video/shrinkingtorus.gif"
                  alt="Shrinking Torus"
-                 style="width:600px;height:300px;">
+                 style="width:600px;height:300px;display:block;">
+        </li>
+
+        <li>
+            <span class="ptitle">Shrinking Peanut</span>
+            <img src="/assets/video/peanut.gif"
+                 alt="Shrinking Peanut"
+                 style="width:600px;height:300px;display:block;">
         </li>
     </ol>
 </section>
